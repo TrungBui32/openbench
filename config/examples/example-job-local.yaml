@@ -1,0 +1,20 @@
+job:
+  name: hello-local
+  image: alpine:3.20
+  command: "sh -c 'echo hello from $(hostname); sleep 2'"
+  nodes: 3
+  timeout_minutes: 10
+  on_failure: fail-fast
+
+  env:
+    - name: TEST_MODE
+      value: smoke
+
+  storage:
+    type: local
+    dir: ./.openbench/logs
+    path_prefix: hello-local/{run_id}/
+
+  trigger:
+    type: manual
+    cron_schedule: null

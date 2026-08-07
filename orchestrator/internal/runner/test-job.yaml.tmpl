@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{.Name}}-{{.RunID}}
+  labels:
+    app: openbench
+    run-id: {{.RunID}}
+spec:
+  parallelism: {{.Nodes}}
+  completions: {{.Nodes}}
+  completionMode: Indexed
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: {{.TimeoutSeconds}}
+      containers:
+        - name: test
+          image: {{.Image}}
+          command: ["/bin/sh", "-c", {{.Command | jsonQuote}}]
+          env:
+{{- range .Env }}
+            - name: {{ .Name }}
+              value: {{ .Value }}
+{{- end }}
+            # Which cluster node this pod landed on — visible in collected logs
+            # so users can confirm jobs spread across server + workers.
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName

@@ -1,0 +1,29 @@
+job:
+  name: hello-k8s
+  image: alpine:3.20
+  command: "sh -c 'echo hello from $(hostname) running on node $NODE_NAME; sleep 2'"
+  nodes: 3
+  timeout_minutes: 10
+  on_failure: fail-fast
+
+  env:
+    - name: TEST_MODE
+      value: smoke
+
+  infra:
+    provider: aws
+    instance_type: t3.xlarge
+    region: ap-southeast-2
+    spot: true
+    ttl_minutes: 60
+
+  storage:
+    type: s3
+    # Your S3 logs bucket. Run scripts/verify-aws.sh — it prints the exact
+    # bucket name for your account — then set it here.
+    bucket: openbench-logs-replace-me
+    path_prefix: hello-k8s/{run_id}/
+
+  trigger:
+    type: manual
+    cron_schedule: null

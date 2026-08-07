@@ -1,0 +1,71 @@
+// OpenBench Jenkins pipeline.
+//
+// One entrypoint into the system: build the orchestrator binary, then invoke
+// the CLI. The config file is the job interface; this pipeline is only the
+// trigger/CI shell around it (manual, webhook, or cron triggers).
+
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'JOB_CONFIG',
+               defaultValue: 'config/examples/example-job-aws-k8s.yaml',
+               description: 'Path (in the workspace) to the job.yaml to run')
+        choice(name: 'OPENBENCH_MODE',
+               choices: ['docker', 'k8s'],
+               description: 'Execution backend: local docker or kubernetes')
+        string(name: 'OPENBENCH_VERSION', defaultValue: 'dev', description: 'Orchestrator version label')
+    }
+
+    environment {
+        // Pre-seed any job secrets declared with source: jenkins-credentials.
+        // Credentials IDs must match job.yaml secret keys.
+        // e.g. REGISTRY_TOKEN = credentials('registry-token')
+        OPENBENCH_HOME = "${env.WORKSPACE}/.openbench"
+
+        // Remote-state env vars are read from the agent environment and passed
+        // through unchanged; unset them only if you know the agent has no creds.
+        OPENBENCH_STATE_BUCKET   = "${env.OPENBENCH_STATE_BUCKET ?: ''}"
+        OPENBENCH_STATE_REGION   = "${env.OPENBENCH_STATE_REGION ?: ''}"
+        OPENBENCH_STATE_LOCK_TABLE = "${env.OPENBENCH_STATE_LOCK_TABLE ?: ''}"
+    }
+
+    stages {
+        stage('Build orchestrator') {
+            steps {
+                sh 'cd orchestrator && go build -o openbench ./cmd/openbench'
+            }
+        }
+
+        stage('Validate config') {
+            steps {
+                sh './orchestrator/openbench validate "${JOB_CONFIG}"'
+            }
+        }
+
+        stage('Run job') {
+            steps {
+                script {
+                    def status = sh(
+                        script: './orchestrator/openbench run --mode "${OPENBENCH_MODE}" "${JOB_CONFIG}"',
+                        returnStatus: true
+                    )
+                    // TODO: parse the run summary (written to the storage
+                    // backend as <path_prefix>/{run_id}/summary.json) and push
+                    // pass/fail counts to the Prometheus Pushgateway here.
+                    if (status != 0) {
+                        currentBuild.result = 'FAILURE'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Never leave ephemeral infra behind, even on crash/failure paths.
+            // The region falls back to OPENBENCH_STATE_REGION (set above).
+            sh './orchestrator/openbench ttl-watch --once || true'
+        }
+    }
+}

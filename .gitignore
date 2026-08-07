@@ -1,0 +1,26 @@
+# Go
+/orchestrator/openbench
+/openbench
+*.test
+orchestrator/vendor/
+
+# Local run metadata (not the log store itself)
+.openbench/
+
+# Terraform
+.terraform/
+terraform/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.hint
+# .terraform.lock.hcl is committed (pins provider versions for reproducible runs)
+
+# Logs / scratch
+*.log
+/tmp/
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

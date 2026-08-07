@@ -1,0 +1,203 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://openbench.dev/schemas/job.schema.json",
+  "title": "OpenBench Job Config",
+  "description": "Schema for job.yaml, the single user-facing config that defines an entire test run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job"],
+  "properties": {
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "image", "command", "nodes", "storage", "trigger"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+          "description": "Unique job identifier. Lowercase letters, digits, hyphens."
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Docker image the test runs in."
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Command executed inside the container, overriding the image entrypoint."
+        },
+        "nodes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of parallel replicas for the test."
+        },
+        "timeout_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Per-job execution timeout. Must be <= infra.ttl_minutes (enforced semantically)."
+        },
+        "on_failure": {
+          "type": "string",
+          "enum": ["fail-fast", "collect-all"],
+          "default": "fail-fast"
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "value"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "value": { "type": "string" }
+            }
+          }
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "source", "key"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "source": { "type": "string", "enum": ["env", "jenkins-credentials"] },
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Orchestrator env var name (source=env) or Jenkins credential ID (source=jenkins-credentials)."
+              }
+            }
+          }
+        },
+        "infra": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "instance_type", "region", "ttl_minutes"],
+          "properties": {
+            "provider": { "type": "string", "enum": ["aws"] },
+            "instance_type": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Must exist in the supported instance-type map (enforced semantically)."
+            },
+            "region": { "type": "string", "minLength": 1 },
+            "spot": {
+              "type": "boolean",
+              "description": "Launch EC2 instances as spot (interruption-capable, cheaper)."
+            },
+            "ttl_minutes": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Safety auto-teardown; hard upper bound on job lifetime."
+            }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "path_prefix"],
+          "properties": {
+            "type": { "type": "string", "enum": ["local", "s3"] },
+            "dir": {
+              "type": "string",
+              "description": "Local output directory. Required when type=local."
+            },
+            "bucket": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9.-]*[a-z0-9]$",
+              "description": "S3 bucket name (S3-compliant rules). Required when type=s3."
+            },
+            "path_prefix": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9/_\\-{}]+$",
+              "description": "Prefix for log object keys, e.g. gpu-driver/{run_id}/. Sanitized against path traversal."
+            }
+          }
+        },
+        "trigger": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "type": "string", "enum": ["manual", "jenkins-webhook", "cron"] },
+            "cron_schedule": {
+              "type": ["string", "null"],
+              "description": "Required when type=cron; validated as a cron expression."
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "job": {
+            "properties": {
+              "storage": {
+                "properties": { "type": { "const": "local" } }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "job": {
+            "properties": {
+              "storage": { "required": ["dir"] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "job": {
+            "properties": {
+              "storage": {
+                "properties": { "type": { "const": "s3" } }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "job": {
+            "properties": {
+              "storage": { "required": ["bucket"] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "job": {
+            "properties": {
+              "trigger": {
+                "properties": { "type": { "const": "cron" } }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "job": {
+            "properties": {
+              "trigger": { "required": ["cron_schedule"] }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

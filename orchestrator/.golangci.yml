@@ -1,0 +1,19 @@
+version: "2"
+
+run:
+  go: "1.25"
+
+linters:
+  settings:
+    errcheck:
+      # Deferred Close/cleanup failures are surfaced by the caller's defer
+      # handler, not at the call site, so skip them for these functions.
+      exclude-functions:
+        - (*os.File).Close
+        - (io.ReadCloser).Close
+        - (io.Closer).Close
+        - os.Remove
+        - os.Unsetenv
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
