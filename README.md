@@ -66,7 +66,9 @@ export OPENBENCH_TERRAFORM_DIR=./terraform
 `run --mode k8s` provisions EC2 nodes (optionally as spot via `infra.spot`),
 bootstraps a k3s cluster — node 0 is the control plane and the rest join as
 workers — schedules the job across the cluster, collects logs into S3, and
-tears everything down, including the staged handoff objects, when the run ends.
+attempts teardown of the cluster and staged handoff objects when the run ends.
+Kubernetes collect-all requires Kubernetes 1.33+ (or a cluster with
+`JobBackoffLimitPerIndex` enabled). Pods are required to run on distinct nodes.
 Point the example's `storage.bucket` at the logs bucket the verify script
 reports.
 
@@ -78,8 +80,8 @@ reports.
 1. **Provision** — if `infra.provider: aws`, apply the Terraform config
    (`terraform/`) to a per-run state key: security group (k3s API + inter-node),
    IAM role, and N EC2 nodes. Node 0 bootstraps the **k3s server**; every other
-   node joins as a **worker** via a token-less S3 handoff (no SSH keys are
-   created or stored). The server stages its kubeconfig in S3 for the
+   node joins as a **worker** via an IAM-scoped S3 handoff with a random
+   server-generated join token (no SSH keys are created or stored). The server stages its kubeconfig in S3 for the
    orchestrator to fetch. `infra.spot` launches nodes as spot instead of
    on-demand.
 2. **Test** — a `--mode docker` run fans out N containers on the host; a
@@ -89,7 +91,9 @@ reports.
 3. **Collect** — per-node logs and a `summary.json` (the Jenkins-parsed metric
    artifact) are written to local storage or S3.
 4. **Teardown** — the cluster computes, S3-staged kubeconfig, and Terraform
-   resources are destroyed (always — even after a failed run). `openbench
+   resources are scheduled for teardown, including after failed runs. Cleanup
+   failures return a nonzero exit code and remain visible in `status` for retry.
+   `openbench
    destroy <run_id>` forces the same teardown on demand; `openbench ttl-watch`
    is the crash-safety net that terminates instances past their TTL.
 

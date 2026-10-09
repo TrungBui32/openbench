@@ -26,11 +26,11 @@ func TestRenderJobManifestIncludesResolvedSecrets(t *testing.T) {
 
 	for _, want := range []string{
 		"name: PLAIN",
-		"value: value",
+		`value: "value"`,
 		"name: SECRET_A",
-		"value: alpha",
+		`value: "alpha"`,
 		"name: SECRET_B",
-		"value: beta",
+		`value: "beta"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("manifest missing %q:\n%s", want, out)

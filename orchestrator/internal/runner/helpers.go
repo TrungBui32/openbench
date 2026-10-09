@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"text/template"
@@ -30,7 +31,8 @@ func executeTemplate(tmplSrc string, data any) (string, error) {
 func jobName(name, runID string) string {
 	s := strings.ToLower(sanitize(name) + "-" + sanitize(runID))
 	if len(s) > 57 {
-		s = s[:57]
+		digest := sha256.Sum256([]byte(s))
+		s = strings.TrimRight(s[:48], "-.") + fmt.Sprintf("-%x", digest[:4])
 	}
 	return strings.Trim(s, "-.")
 }

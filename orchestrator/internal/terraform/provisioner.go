@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,6 +26,9 @@ const EnvTerraformDir = "OPENBENCH_TERRAFORM_DIR"
 // kubeconfigS3Key is the S3 object key, under the remote state bucket, where
 // node 0 base64-encodes its rewritten kubeconfig after k3s bootstraps.
 const kubeconfigS3Key = "kubeconfig/{run_id}/k3s.yaml.b64"
+
+// bootstrapTokenS3Key stores the server-generated private join token.
+const bootstrapTokenS3Key = "kubeconfig/{run_id}/join-token"
 
 // serverURLS3Key is where node 0 publishes the cluster URL for joining agents.
 const serverURLS3Key = "kubeconfig/{run_id}/server-url"
@@ -59,6 +63,7 @@ func NewAWS(ctx context.Context, dir string) (*AWS, error) {
 	}
 	cfg, err := awsconfig.LoadDefaultConfig(ctx)
 	if err != nil {
+		_ = r.Close()
 		return nil, fmt.Errorf("loading AWS config: %w", err)
 	}
 	return &AWS{runner: r, s3: s3.NewFromConfig(cfg)}, nil
@@ -104,8 +109,12 @@ func (a *AWS) Provision(ctx context.Context, runID string, job *config.Job) (*Pr
 	}, nil
 }
 
-// Teardown destroys the infrastructure for the run on its isolated state key.
+// Close removes the private Terraform working directory.
+func (a *AWS) Close() error { return a.runner.Close() }
+
+// Teardown destroys resources and removes credential handoffs, reporting failures.
 func (a *AWS) Teardown(ctx context.Context, runID string, job *config.Job) error {
+	defer os.RemoveAll(filepath.Join(os.TempDir(), "openbench", runID))
 	vars := map[string]any{
 		"nodes":         job.Nodes,
 		"instance_type": job.Infra.InstanceType,
@@ -118,17 +127,43 @@ func (a *AWS) Teardown(ctx context.Context, runID string, job *config.Job) error
 		"state_region":  os.Getenv(EnvStateRegion),
 		"tags":          varsTag(job),
 	}
+	var cleanupErr error
 	if err := a.runner.Destroy(ctx, runID, vars); err != nil {
-		return fmt.Errorf("teardown: %w", err)
+		cleanupErr = fmt.Errorf("teardown: %w", err)
 	}
-	// Remove the handoff objects staged during provisioning; the state file is
-	// intentionally kept as run history.
-	for _, key := range []string{kubeconfigS3Key, serverURLS3Key} {
+	// Delete all versions of credential handoffs, even after a failed destroy.
+	for _, key := range []string{kubeconfigS3Key, serverURLS3Key, bootstrapTokenS3Key} {
 		k := strings.ReplaceAll(key, "{run_id}", runID)
-		_, _ = a.s3.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(os.Getenv(EnvStateBucket)),
-			Key:    aws.String(k),
-		})
+		cleanupErr = errors.Join(cleanupErr, a.deleteHandoff(ctx, k))
+	}
+	return cleanupErr
+}
+
+func (a *AWS) deleteHandoff(ctx context.Context, key string) error {
+	bucket := aws.String(os.Getenv(EnvStateBucket))
+	options := func(o *s3.Options) { o.Region = os.Getenv(EnvStateRegion) }
+	pages := s3.NewListObjectVersionsPaginator(a.s3, &s3.ListObjectVersionsInput{Bucket: bucket, Prefix: aws.String(key)})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx, options)
+		if err != nil {
+			return fmt.Errorf("listing bootstrap versions %s: %w", key, err)
+		}
+		for _, version := range page.Versions {
+			if aws.ToString(version.Key) != key {
+				continue
+			}
+			if _, err := a.s3.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: bucket, Key: version.Key, VersionId: version.VersionId}, options); err != nil {
+				return err
+			}
+		}
+		for _, marker := range page.DeleteMarkers {
+			if aws.ToString(marker.Key) != key {
+				continue
+			}
+			if _, err := a.s3.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: bucket, Key: marker.Key, VersionId: marker.VersionId}, options); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -173,7 +208,11 @@ func (a *AWS) fetchKubeconfig(ctx context.Context, runID string) (string, error)
 		if time.Now().After(deadline) {
 			return "", fmt.Errorf("fetching kubeconfig from s3 (%s): %w", key, err)
 		}
-		time.Sleep(3 * time.Second)
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))

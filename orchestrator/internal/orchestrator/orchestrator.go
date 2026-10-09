@@ -6,6 +6,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -47,19 +48,31 @@ func New(job *config.Job, mode string, builder RunnerBuilder, backend storage.Ba
 //
 // When the job declares AWS infra, Provision runs first and the teardown runs
 // unconditionally afterwards (deferred, so even a test failure or provisioning
-// error still releases the instances). The persisted run record walks
+// error still attempts cleanup). The persisted run record walks
 // provisioning -> running -> done (or failed).
 func (o *Orchestrator) Run(ctx context.Context) (sum *runresult.Summary, runErr error) {
 	runID := runresult.NewRunID(o.job.Name)
 	started := time.Now().UTC()
+	if closer, ok := o.infra.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
+	cleanupError := ""
 
-	o.saveRecord(runID, "provisioning", nil)
+	if err := o.saveRecord(runID, "provisioning", nil); err != nil {
+		return nil, fmt.Errorf("saving run before provisioning: %w", err)
+	}
 	defer func() {
 		phase := "done"
 		if runErr != nil || (sum != nil && sum.Status == "failed") {
 			phase = "failed"
 		}
-		o.saveRecord(runID, phase, sum)
+		if o.store != nil {
+			rec := &runstore.Record{RunID: runID, JobName: o.job.Name, Mode: o.mode, Phase: phase, Nodes: o.job.Nodes, Infra: o.job.Infra, Storage: o.job.Storage, Summary: sum, CleanupError: cleanupError}
+			if runErr != nil {
+				rec.Error = runErr.Error()
+			}
+			runErr = errors.Join(runErr, o.store.Save(rec))
+		}
 	}()
 
 	var provisioned *terraform.ProvisionOutput
@@ -69,7 +82,8 @@ func (o *Orchestrator) Run(ctx context.Context) (sum *runresult.Summary, runErr 
 		// Teardown is documented as safe to call even when provision failed.
 		defer func() {
 			if err := o.infra.Teardown(context.Background(), runID, o.job); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: teardown for run %s: %v\n", runID, err)
+				cleanupError = err.Error()
+				runErr = errors.Join(runErr, fmt.Errorf("teardown for run %s failed; retry with openbench destroy %s: %w", runID, runID, err))
 			}
 		}()
 		po, err := o.infra.Provision(ctx, runID, o.job)
@@ -90,7 +104,9 @@ func (o *Orchestrator) Run(ctx context.Context) (sum *runresult.Summary, runErr 
 	if closer, ok := r.(interface{ Close() error }); ok {
 		defer func() { _ = closer.Close() }()
 	}
-	o.saveRecord(runID, "running", nil)
+	if err := o.saveRecord(runID, "running", nil); err != nil {
+		return nil, err
+	}
 
 	var results []runner.Result
 	// Clean up captured log files after the run, including on error paths.
@@ -166,15 +182,17 @@ func (o *Orchestrator) Run(ctx context.Context) (sum *runresult.Summary, runErr 
 		return nil, fmt.Errorf("writing summary: %w", err)
 	}
 
-	o.saveRecord(runID, "running", sum)
+	if err := o.saveRecord(runID, "running", sum); err != nil {
+		return sum, err
+	}
 	return sum, nil
 }
 
-func (o *Orchestrator) saveRecord(runID, phase string, sum *runresult.Summary) {
+func (o *Orchestrator) saveRecord(runID, phase string, sum *runresult.Summary) error {
 	if o.store == nil {
-		return
+		return nil
 	}
-	_ = o.store.Save(&runstore.Record{
+	return o.store.Save(&runstore.Record{
 		RunID:   runID,
 		JobName: o.job.Name,
 		Mode:    o.mode,

@@ -105,4 +105,6 @@ orchestrator: `OPENBENCH_STATE_BUCKET`, `OPENBENCH_STATE_REGION`,
 `OPENBENCH_TERRAFORM_DIR` (default `./terraform`). A job whose `infra.provider`
 is `aws` runs Docker-style `--mode k8s` against a provisioned k3s cluster: the
 terraform config is applied, the node stages its kubeconfig into the state
-bucket for the orchestrator to fetch, and everything is destroyed on teardown.
+bucket for the orchestrator to fetch, and teardown is attempted after execution.
+Cleanup failures appear in `status`
+and return a nonzero exit code; use `destroy` to retry.

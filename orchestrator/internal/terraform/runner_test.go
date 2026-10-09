@@ -33,3 +33,44 @@ func TestStateBackendConfigRequiresEnv(t *testing.T) {
 		t.Fatal("expected error when state backend env is missing")
 	}
 }
+
+func TestPrivateWorkingDirectories(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(source+"/terraform", []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", source)
+	if err := os.WriteFile(source+"/main.tf", []byte("terraform {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	os.Mkdir(source+"/.terraform", 0700)
+	os.WriteFile(source+"/.terraform/terraform.tfstate", []byte("private"), 0600)
+	os.WriteFile(source+"/terraform.tfstate", []byte("private"), 0600)
+	a, err := New(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := New(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if a.Dir() == b.Dir() || a.Dir() == source {
+		t.Fatal("working directories not isolated")
+	}
+	if _, err := os.Stat(a.Dir() + "/main.tf"); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"terraform.tfstate", ".terraform"} {
+		if _, err := os.Stat(a.Dir() + "/" + file); !os.IsNotExist(err) {
+			t.Fatalf("copied backend state %s", file)
+		}
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(b.Dir() + "/main.tf"); err != nil {
+		t.Fatal("closing one runner affected another", err)
+	}
+}

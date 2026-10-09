@@ -5,6 +5,7 @@ package terraform
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,11 +33,20 @@ func New(dir string) (*Runner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("terraform binary not found: %w (install HashiCorp Terraform)", err)
 	}
-	tf, err := tfexec.NewTerraform(dir, tfPath)
+	workdir, err := os.MkdirTemp("", "openbench-terraform-*")
 	if err != nil {
+		return nil, err
+	}
+	if err := copyConfig(dir, workdir); err != nil {
+		os.RemoveAll(workdir)
+		return nil, err
+	}
+	tf, err := tfexec.NewTerraform(workdir, tfPath)
+	if err != nil {
+		os.RemoveAll(workdir)
 		return nil, fmt.Errorf("initializing terraform-exec: %w", err)
 	}
-	return &Runner{dir: dir, tf: tf}, nil
+	return &Runner{dir: workdir, tf: tf}, nil
 }
 
 // stateBackendConfig returns the -backend-config flags derived from env.
@@ -176,3 +186,37 @@ func hclValue(v any) string {
 
 // Dir is the terraform root used by callers for display/debugging.
 func (r *Runner) Dir() string { return filepath.Clean(r.dir) }
+
+// Close removes only this runner's private configuration and backend cache.
+func (r *Runner) Close() error { return os.RemoveAll(r.dir) }
+
+func copyConfig(source, dest string) error {
+	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() && (entry.Name() == ".terraform" || entry.Name() == ".git") {
+			return filepath.SkipDir
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dest, rel)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0700)
+		}
+		// Copy configuration, templates and provider locks, never local state or credentials.
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink in Terraform configuration: %s", rel)
+		}
+		if !(strings.HasSuffix(rel, ".tf") || strings.HasSuffix(rel, ".tf.json") || strings.HasSuffix(rel, ".sh") || strings.HasSuffix(rel, ".tmpl") || entry.Name() == ".terraform.lock.hcl") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0600)
+	})
+}

@@ -162,6 +162,12 @@ func statusCmd() *cobra.Command {
 			fmt.Fprintf(w, "job_name:    %s\n", rec.JobName)
 			fmt.Fprintf(w, "mode:        %s\n", rec.Mode)
 			fmt.Fprintf(w, "phase:       %s\n", rec.Phase)
+			if rec.Error != "" {
+				fmt.Fprintf(w, "error:       %s\n", rec.Error)
+			}
+			if rec.CleanupError != "" {
+				fmt.Fprintf(w, "cleanup_error: %s\n", rec.CleanupError)
+			}
 			if rec.Summary != nil {
 				fmt.Fprintf(w, "status:      %s\n", rec.Summary.Status)
 				fmt.Fprintf(w, "pass/fail:   %d/%d\n", rec.Summary.PassCount, rec.Summary.FailCount)
@@ -250,7 +256,13 @@ func destroyCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				if closer, ok := provisioner.(interface{ Close() error }); ok {
+					defer closer.Close()
+				}
 				if err := provisioner.Teardown(ctx, rec.RunID, job); err != nil {
+					rec.CleanupError = err.Error()
+					rec.Phase = "failed"
+					_ = store.Save(rec)
 					return fmt.Errorf("tearing down cloud infrastructure for run %s: %w", rec.RunID, err)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "run %s: cloud infrastructure destroyed\n", rec.RunID)

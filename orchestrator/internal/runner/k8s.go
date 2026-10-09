@@ -88,6 +88,8 @@ func kubeConfig(path string) (*rest.Config, error) {
 // Run renders and applies an indexed Job (completionMode: Indexed) so pods map
 // deterministically to node IDs via their ordinal suffix, then waits for it to
 // finish (respecting job.TimeoutMinutes) and collects exit codes + logs.
+// Collect-all uses independent per-index failure limits; fail-fast uses a
+// global zero backoff limit. Required anti-affinity enforces separate nodes.
 //
 // Per-node timeout is enforced by activeDeadlineSeconds on the pod template; a
 // timed-out node becomes a failed pod (backoffLimit 0 fails the job). With
@@ -102,7 +104,7 @@ func (k *K8sRunner) Run(ctx context.Context, job *config.Job, runID string) ([]R
 	if err != nil {
 		return nil, err
 	}
-name := jobName(job.Name, runID)
+	name := jobName(job.Name, runID)
 	jobSpec, err := parseJob(manifest, name)
 	if err != nil {
 		return nil, err
@@ -280,9 +282,13 @@ func renderJobManifest(job *config.Job, runID string, env []config.EnvVar) (stri
 		Command        string
 		Nodes          int
 		TimeoutSeconds int64
+		OnFailure      string
+		ObjectName     string
 		Env            []config.EnvVar
 	}{
 		Name:           job.Name,
+		ObjectName:     jobName(job.Name, runID),
+		OnFailure:      job.OnFailure,
 		RunID:          sanitize(runID),
 		Image:          job.Image,
 		Command:        job.Command,
@@ -319,7 +325,7 @@ func parseJob(manifest, fallbackName string) (*batchv1.Job, error) {
 	if job.Name == "" {
 		job.Name = fallbackName
 	}
-	if job.Spec.BackoffLimit == nil {
+	if job.Spec.BackoffLimit == nil && job.Spec.BackoffLimitPerIndex == nil {
 		job.Spec.BackoffLimit = ptr(int32(0))
 	}
 	return &job, nil

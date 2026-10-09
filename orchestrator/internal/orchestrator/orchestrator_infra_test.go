@@ -104,3 +104,26 @@ func TestRunProvisionsButSkipsRunOnProvisionError(t *testing.T) {
 		t.Fatal("teardown should still be attempted after a failed provision (partial creates must be released)")
 	}
 }
+
+func TestTeardownFailureIsReturnedAndPersisted(t *testing.T) {
+	t.Setenv("OPENBENCH_HOME", t.TempDir())
+	store, err := runstore.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov := &fakeProvisioner{tearErr: context.DeadlineExceeded}
+	builder := func(context.Context, string) (runner.Runner, error) {
+		return &fakeRunner{results: []runner.Result{{NodeID: 0}}}, nil
+	}
+	sum, err := New(awsJob(t.TempDir()), "k8s", builder, storage.NewLocal(t.TempDir()), store, prov).Run(context.Background())
+	if err == nil || sum == nil {
+		t.Fatalf("expected summary and cleanup error, got %v %v", sum, err)
+	}
+	rec, err := store.Get(sum.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Phase != "failed" || rec.CleanupError == "" || rec.Error == "" {
+		t.Fatalf("cleanup failure missing: %+v", rec)
+	}
+}

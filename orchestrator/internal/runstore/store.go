@@ -20,14 +20,16 @@ var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // Record is the persisted metadata for one run.
 type Record struct {
-	RunID   string             `json:"run_id"`
-	JobName string             `json:"job_name"`
-	Mode    string             `json:"mode"`  // docker | k8s
-	Phase   string             `json:"phase"` // provisioning | running | done | failed
-	Nodes   int                `json:"nodes"` // parallel replicas (needed for teardown)
-	Infra   config.Infra       `json:"infra,omitempty"`
-	Storage config.Storage     `json:"storage"`
-	Summary *runresult.Summary `json:"summary,omitempty"`
+	Error        string             `json:"error,omitempty"`
+	CleanupError string             `json:"cleanup_error,omitempty"`
+	RunID        string             `json:"run_id"`
+	JobName      string             `json:"job_name"`
+	Mode         string             `json:"mode"`  // docker | k8s
+	Phase        string             `json:"phase"` // provisioning | running | done | failed
+	Nodes        int                `json:"nodes"` // parallel replicas (needed for teardown)
+	Infra        config.Infra       `json:"infra,omitempty"`
+	Storage      config.Storage     `json:"storage"`
+	Summary      *runresult.Summary `json:"summary,omitempty"`
 }
 
 type Store struct {

@@ -39,7 +39,7 @@ Kubernetes path are interchangeable.
   stdout/stderr per node, and returns exit codes. Supports `fail-fast`
   (cancel others on first failure) and per-node timeouts.
 - **K8sRunner** renders an indexed `Job` manifest (`parallelism: N`,
-  `completionMode: Indexed`, `backoffLimit: 0`, `restartPolicy: Never`) via
+  `completionMode: Indexed`, `restartPolicy: Never`) via
   client-go, waits for completion, then collects per-pod exit codes and logs.
 
 ### Storage (`internal/storage`)
@@ -51,15 +51,18 @@ implementations. Adding a backend means one new file, not orchestrator changes.
 
 `terraform/modules/aws-test-nodes` provisions N EC2 instances (Docker + optional
 k3s bootstrap). State is remote (S3 + DynamoDB lock) with a **per-run state
-key** (`state/{run_id}/terraform.tfstate`) — not just per-run tfvars — so
-concurrent runs never apply against the same state. Resources are tagged
+key** (`state/{run_id}/terraform.tfstate`). Each runner uses a private working
+directory so concurrent runs cannot
+overwrite one another’s local backend configuration. Resources are tagged
 `openbench:run_id` and `openbench:ttl_expires_at`.
 
 AWS provisioning is wired into the lifecycle (`orchestrator/orchestrator.go`):
 when a job declares `infra.provider: aws`, `run` **provisions** first (forcing
 `enable_k3s=true`), hands the resulting k3s kubeconfig to a `K8sRunner`, then
-**tears everything down unconditionally** in a deferred call — even on test
-failures or partial provisioning. `destroy` also runs the teardown against the
+**attempts teardown** in a deferred call — even on test
+failures or partial provisioning. Cleanup failures return an error and persist
+in the run record for `status`; retry with `destroy`. `destroy` also runs
+the teardown against the
 run's state key before dropping local metadata.
 
 ### k3s cluster handoff
@@ -99,3 +102,18 @@ controls whether remaining nodes are cancelled on the first failure
 
 Jenkins parses `summary.json` → Prometheus Pushgateway → Grafana. The summary
 schema is stable, so wiring this in needs no schema changes.
+
+## Failure isolation and bootstrap
+
+Collect-all uses `backoffLimitPerIndex: 0` (Kubernetes 1.33+ or the enabled
+feature gate): failed indexes do not cancel the remaining indexes. Fail-fast
+uses `backoffLimit: 0`. Required pod anti-affinity spreads each run across
+separate hostnames; a run needs N schedulable nodes.
+
+Node 0 generates a random 256-bit join token and shares it with workers through
+this run's IAM-scoped S3 prefix. It is never placed in Terraform variables or
+state. Teardown deletes every version of the token and kubeconfig handoffs and
+removes the local kubeconfig. The operator needs `s3:ListBucketVersions` and
+`s3:DeleteObjectVersion` in addition to the existing handoff permissions.
+The TTL watcher terminates expired instances; retry `destroy` to remove other
+resources after a crash. Cleanup cannot be guaranteed during API outages.
